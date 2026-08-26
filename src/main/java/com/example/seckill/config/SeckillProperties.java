@@ -7,7 +7,7 @@ public class SeckillProperties {
 
     private long paymentTimeoutSeconds = 1800;
     private long creatingLeaseSeconds = 60;
-    private long reconcileGraceSeconds = 600;
+    private long reconcileGraceSeconds = 60;                // 600太长了
     private long reservationRetentionSeconds = 604800;
     private Scheduler scheduler = new Scheduler();
     private Mq mq = new Mq();
@@ -64,7 +64,6 @@ public class SeckillProperties {
         private long fixedDelayMs = 3000;
         private int batchSize = 100;
         private int outboxMaxRetry = 10;
-        private int compensationMaxRetry = 20;
         private long retryBaseSeconds = 5;
         private long sendingTimeoutSeconds = 120;
 
@@ -90,14 +89,6 @@ public class SeckillProperties {
 
         public void setOutboxMaxRetry(int outboxMaxRetry) {
             this.outboxMaxRetry = outboxMaxRetry;
-        }
-
-        public int getCompensationMaxRetry() {
-            return compensationMaxRetry;
-        }
-
-        public void setCompensationMaxRetry(int compensationMaxRetry) {
-            this.compensationMaxRetry = compensationMaxRetry;
         }
 
         public long getRetryBaseSeconds() {

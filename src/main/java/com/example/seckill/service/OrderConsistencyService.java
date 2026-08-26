@@ -40,6 +40,10 @@ public class OrderConsistencyService {
      * 当前系统保证 order + CLOSE_ORDER outbox + guard=CREATED 同事务提交，
      * 因此这里不重复检查/补写 CLOSE_ORDER outbox。
      */
+    // 这个方法的order是传入的参数，不是方法内部查询的，可能order.status是老的
+    // 其次，真正执行到redis状态修改，有可能订单状态也是老的（比如走WAIT_pay的逻辑。结果状态突然变成CANCELED
+    // 这个其实不用担心，redis lua脚本是原子的，并且redis采用io多路复用，哪个请求先到，就先处理谁，并且操作是CAS（CAS要求原子性）
+    // 因此没有问题。
     public void syncFromExistingOrder(SeckillOrder order) {
         switch (order.status()) {
             case WAIT_PAY, PAID -> markOrderedAfterConfirmedOrder(order.orderNo());

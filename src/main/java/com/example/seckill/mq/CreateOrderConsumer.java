@@ -79,6 +79,7 @@ public class CreateOrderConsumer implements RocketMQListener<MessageExt> {
             return;
         }
 
+        // 因为也还是不确定订单是否入库，因此不要贸然设置stock_released标志位
         if (claim == ClaimResult.RELEASED) {
             return;
         }

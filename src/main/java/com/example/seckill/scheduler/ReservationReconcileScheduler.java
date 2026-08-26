@@ -57,7 +57,7 @@ public class ReservationReconcileScheduler {
                     continue;
                 }
 
-                // 实际上我觉得，这里可以markStockReleased
+                // 实际上我觉得，这里可以markStockReleased 不行！！！ 因为不确定库当中有没有订单
                 if (reservation.state() == ReservationState.RELEASED) {
                     reservationService.removePendingIndex(orderNo);
                     continue;
@@ -67,6 +67,7 @@ public class ReservationReconcileScheduler {
                  * 扫描到 orderNo 之后，消费者可能刚好重新 claim 并延长 lease。
                  * (再)读一次 lease 可以减少与健康消费者竞争 guard，但不能替代 guard。
                  */
+                // 建议这里可以把pending zset中的sore改为leaseUntilMillis，这样避免频繁扫 但对账任务无法处理
                 if (reservation.state() == ReservationState.CREATING
                         && reservation.leaseUntilMillis() > System.currentTimeMillis()) {
                     continue;
