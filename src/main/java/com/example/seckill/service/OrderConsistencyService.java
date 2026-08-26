@@ -132,59 +132,120 @@ public class OrderConsistencyService {
 
 
     /*
-     * 说实话，releaseAfterAbortedFence我还是倾向，ordered的保留状态，
-     * 如果库中没有订单，是脏数据（也需要回补库存），如果库中有订单，就抛出异常。
-     * 因为如果库中有订单并且是canceled，就走release_canceled话，
-     * 那么实际上如果这个订单是捏造的，就会导致库存++
+     * 如果 guard 已经为 ABORTED：
+     *
+     * 1. DB 中不存在订单：
+     *    guard 已经保证该 orderNo 不可能再合法建单。
+     *    即使 Redis reservation 当前错误地处于 ORDERED，
+     *    也可以将其视为脏状态并释放这次预扣库存。
+     *
+     * 2. DB 中存在订单：
+     *    这是严重的不变量冲突：
+     *
+     *        guard = ABORTED
+     *        DB order = present
+     *
+     *    此时无法判断是 guard 非法还是 DB order 非法，
+     *    因而不能自动释放库存，否则可能对真实的
+     *    WAIT_PAY / PAID 订单执行 stock++，造成超卖。
+     *
+     *    应记录异常并进入人工/专门恢复流程。
      */
     public ReleaseResult releaseAfterAbortedFence(String orderNo) {
-        ReleaseResult result = reservationService.releaseUnorderedAfterFence(orderNo);
+        Optional<SeckillOrder> dbOrder =
+                orderRepository.findByOrderNo(orderNo);
+
+        if (dbOrder.isPresent()) {
+            SeckillOrder order = dbOrder.get();
+
+            log.error(
+                    "invariant violated: guard=ABORTED but DB order exists, "
+                            + "orderNo={}, status={}, stockReleased={}",
+                    orderNo,
+                    order.status(),
+                    order.stockReleased()
+            );
+
+            throw new IllegalStateException(
+                    "invariant violated: guard=ABORTED but DB order exists, "
+                            + "orderNo=" + orderNo
+                            + ", status=" + order.status()
+            );
+        }
+
+        /*
+         * 到这里已经确认：
+         *
+         * guard = ABORTED
+         * DB order = missing
+         *
+         * 因而可以确定：
+         * 这次 Redis 预扣库存已经不可能再对应一个合法 DB 订单，
+         * 可以安全释放。
+         */
+        ReleaseResult result =
+                reservationService.releaseUnorderedAfterFence(orderNo);
 
         if (result == ReleaseResult.RELEASED_NOW
                 || result == ReleaseResult.ALREADY_RELEASED) {
+
+            /*
+             * 注意：
+             * 这里不要 markStockReleased()。
+             *
+             * 这是“未成单库存释放”，DB 中不存在订单。
+             * stock_released 只用于真实 CANCELED 订单的库存释放确认。
+             */
             return result;
         }
 
         if (result != ReleaseResult.ORDERED_NOT_ALLOWED) {
             throw new IllegalStateException(
-                    "cannot release aborted reservation, result=" + result
-                            + ", orderNo=" + orderNo);
-        }
-        // 发现新状态 ordered
-        // 实际上，这里可以限制一下多个并发周期任务同时访问数据库
-        SeckillOrder order = orderRepository.findByOrderNo(orderNo)
-                .orElseThrow(() -> new IllegalStateException(
-                        "invariant violated: guard=ABORTED and Redis reservation=ORDERED, "
-                                + "but DB order is missing, orderNo=" + orderNo));
-
-        if (order.status() == OrderStatus.CANCELED) {
-            /*
-             * DB 有真实订单，因此 guard=ABORTED 本身已经异常；
-             * 但订单确实 CANCELED，库存仍可按“已成单后取消”规则安全释放。
-             */
-            log.error("guard=ABORTED but DB order exists, orderNo={}, status=CANCELED", orderNo);
-
-            ReleaseResult canceled = reservationService.releaseCanceled(orderNo);
-            if (canceled == ReleaseResult.RELEASED_NOW
-                    || canceled == ReleaseResult.ALREADY_RELEASED) {
-                orderRepository.markStockReleased(orderNo);
-                return canceled;
-            }
-
-            throw new IllegalStateException(
-                    "cannot release canceled order during ABORTED conflict handling, result="
-                            + canceled + ", orderNo=" + orderNo);
+                    "cannot release aborted reservation, result="
+                            + result
+                            + ", orderNo=" + orderNo
+            );
         }
 
-        if (order.status() == OrderStatus.WAIT_PAY
-                || order.status() == OrderStatus.PAID) {
-            throw new IllegalStateException(
-                    "guard=ABORTED but active DB order exists, orderNo="
-                            + orderNo + ", status=" + order.status());
+        /*
+         * Redis reservation=ORDERED，
+         * 但我们前面已经确认：
+         *
+         * guard = ABORTED
+         * DB order = missing
+         *
+         * 因此这个 ORDERED 不可能代表一个合法已成单状态，
+         * 只能视为 Redis 脏状态。
+         *
+         * 此时允许通过专门的修复 Lua：
+         *
+         * ORDERED -> RELEASED
+         * stock + 1
+         * SREM buyer
+         * 清理相关 ZSET
+         *
+         * 不能调用普通 releaseCanceled()，
+         * 因为这里根本没有真实的 CANCELED DB order。
+         */
+        log.error(
+                "dirty Redis reservation detected: "
+                        + "guard=ABORTED, DB order missing, reservation=ORDERED, "
+                        + "orderNo={}",
+                orderNo
+        );
+
+        ReleaseResult repaired =
+                reservationService.releaseOrderedAfterAbortedFence(orderNo);
+
+        if (repaired == ReleaseResult.RELEASED_NOW
+                || repaired == ReleaseResult.ALREADY_RELEASED) {
+            return repaired;
         }
 
         throw new IllegalStateException(
-                "unexpected DB order status during ABORTED conflict handling, orderNo="
-                        + orderNo + ", status=" + order.status());
+                "cannot repair dirty ORDERED reservation after ABORTED fence, "
+                        + "result=" + repaired
+                        + ", orderNo=" + orderNo
+        );
     }
 }

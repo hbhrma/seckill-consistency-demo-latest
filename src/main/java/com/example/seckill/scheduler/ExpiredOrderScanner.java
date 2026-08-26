@@ -7,10 +7,23 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 延时 MQ 的兜底。
+ * DB 级超时订单最终兜底任务。
  *
- * 即使 CLOSE_ORDER outbox 最终 DEAD、RocketMQ 故障或延时消息丢失，
- * DB 中 expire_time 到期的 WAIT_PAY 订单仍会被这里关闭。
+ * 正常情况下，订单由 RocketMQ CLOSE_ORDER 定时消息在 expireTime
+ * 附近触发关闭。
+ *
+ * 如果 CLOSE_ORDER Outbox 因发送失败次数过多进入 DEAD，
+ * 则由 Outbox DEAD Recovery 负责补偿处理。
+ *
+ * 本任务不依赖 MQ 或 Outbox 状态，属于数据库层面的最终兜底。
+ * 周期扫描已经超过 expire_time 但仍处于 WAIT_PAY 状态的订单，并执行：
+ *
+ * WAIT_PAY -> CANCELED
+ * +
+ * 创建 RELEASE_STOCK Outbox
+ *
+ * 用于兜底 Broker 异常、Consumer 长时间不可用、消费多次失败进入 DLQ，
+ * 或其他异常导致 CLOSE_ORDER 链路未能最终关闭订单的情况。
  */
 @Component
 public class ExpiredOrderScanner {

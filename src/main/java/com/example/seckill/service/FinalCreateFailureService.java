@@ -2,29 +2,27 @@ package com.example.seckill.service;
 
 import com.example.seckill.domain.SeckillOrder;
 import com.example.seckill.dto.CreateOrderMessage;
-import com.example.seckill.repository.CompensationRepository;
 import com.example.seckill.repository.OrderRepository;
 import org.springframework.stereotype.Service;
 
 import java.util.Optional;
 
+// 它的竞争者是创建订单消费者 对账任务
+// guard没有办法阻止它和对账任务竞争
+// 但是两者的逻辑是一样的，并且两者的逻辑具有幂等性
 @Service
 public class FinalCreateFailureService {
 
     private final OrderRepository orderRepository;
     private final OrderTxService orderTxService;
     private final OrderConsistencyService consistencyService;
-    private final CompensationRepository compensationRepository;
 
     public FinalCreateFailureService(OrderRepository orderRepository,
                                      OrderTxService orderTxService,
-                                     OrderConsistencyService consistencyService,
-                                     CompensationRepository compensationRepository) {
+                                     OrderConsistencyService consistencyService) {
         this.orderRepository = orderRepository;
         this.orderTxService = orderTxService;
-        this.consistencyService = consistencyService;
-        this.compensationRepository = compensationRepository;
-    }
+        this.consistencyService = consistencyService;}
 
     /** CREATE_ORDER 重试耗尽进入 DLQ 后的最终处理。 */
     public void handle(CreateOrderMessage message) {
@@ -56,22 +54,9 @@ public class FinalCreateFailureService {
         try {
             consistencyService.releaseAfterAbortedFence(message.orderNo());
         } catch (RuntimeException failure) {
-            /*
-             * 如果 DB 仍明确无订单，说明 ABORTED 后的 Redis 释放/修复暂时没完成，
-             * 写补偿表继续重试。若 DB 又能查到订单，则让异常暴露，不误记成未成单补偿。
-             */
-            Optional<SeckillOrder> now =
-                    orderRepository.findByOrderNo(message.orderNo());
-            if (now.isPresent()) {
-                throw failure;
-            }
-
-            compensationRepository.insertIfAbsent(
-                    message.orderNo(),
-                    message.userId(),
-                    message.goodsId(),
-                    failure.getMessage()
-            );
+            // 可以让对账任务继续进行，因为zset中的记录并没有删除
+            // 可以不需要刷新重试时间戳，让对账任务尽快进行
+            return;
         }
     }
 }

@@ -259,4 +259,28 @@ public class RedisReservationService {
                 String.valueOf(stock));
         redisTemplate.delete(RedisKeys.buyers(goodsId));
     }
+
+    /**
+     * 仅用于严重脏状态修复。调用前必须已经同时确认：
+     * 1. MySQL order-create guard = ABORTED；
+     * 2. DB 中不存在该 orderNo。
+     *
+     * 在这个前提下，Redis reservation=ORDERED 不可能再对应合法 DB 订单，
+     * 因此允许执行 ORDERED -> RELEASED 并回补库存。
+     *
+     * 普通业务路径禁止调用该方法；正常 unordered release 仍然拒绝 ORDERED。
+     */
+    public ReleaseResult releaseOrderedAfterAbortedFence(String orderNo) {
+        Reservation reservation = getReservation(orderNo);
+        if (reservation == null) {
+            return ReleaseResult.MISSING;
+        }
+
+        Long code = redisTemplate.execute(
+                releaseOrderedAfterAbortedScript,
+                releaseKeys(reservation, orderNo),
+                orderNo
+        );
+        return mapReleaseCode(code);
+    }
 }

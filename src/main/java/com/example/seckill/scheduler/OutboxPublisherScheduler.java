@@ -52,7 +52,7 @@ public class OutboxPublisherScheduler {
      * 之后任务会从outbox中取出当前可以处理的消息
      * 然后尝试获取消息的处理权（retry / new -> sending)
      * 之后，对每个消息判断类型：
-     * 1. 消息是close_order，表示这是一个截止支付消息，如果该消息已经到了要截止支付了，那么发送该消息；如果该消息还没有到达截止支付的时间，
+     * 1. 消息是close_order，表示这是一个截止支付消息，如果该消息已经到了要截止支付的时间了，那么发送该消息；如果该消息还没有到达截止支付的时间，
      * 通过syncSendDeliverTimeMills方法，producer（任务）把消息先投递到broker，然后由broker在指定时间发送给消费者（closeOrderConsumer）
      * 2. 如果消息是RELEASE_STOCK，那么就证明，存在订单，因为到了截止支付时间而被closeOrderConsumer关闭，该消费者
      * 关闭订单后（修改订单状态为CANCELED），需要向outbox中插入一个消息，类型是release_stock，用于向broker发送回补库存的消息
@@ -106,6 +106,7 @@ public class OutboxPublisherScheduler {
                 outboxRepository.markSent(outbox.id());
 
             } catch (RuntimeException e) {
+                // 这里抛出的异常应该剔除因为上边消息类型非法的异常
                 int nextRetry = outbox.retryCount() + 1;
                 boolean dead =
                         nextRetry >= properties.getScheduler().getOutboxMaxRetry();
@@ -129,6 +130,7 @@ public class OutboxPublisherScheduler {
         long now = System.currentTimeMillis();
 
         // 修复出来的历史 WAIT_PAY 若已经过期，立即发关单；否则沿用订单原截止时间。
+        // 实际上这里可以不发送消息直接关单。然后向outbox中插入回补库存消息记录
         if (close.expireAtEpochMillis() <= now) {
             return rocketMQTemplate.syncSend(
                     properties.getMq().getCloseOrderTopic(),

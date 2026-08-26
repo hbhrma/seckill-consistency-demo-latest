@@ -122,8 +122,8 @@ public class OrderTxService {
      */
     @Transactional
     public boolean tryAbortOrderCreation(String orderNo) {
-        // 这里我觉得没必要
         // 这里边不加事务我觉得也行
+        // 最好加上
         if (orderRepository.findByOrderNo(orderNo).isPresent()) {
             return false;
         }

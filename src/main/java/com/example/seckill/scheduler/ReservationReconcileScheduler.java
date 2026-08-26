@@ -79,7 +79,7 @@ public class ReservationReconcileScheduler {
                     consistencyService.syncFromExistingOrder(dbOrder.get());
                     continue;
                 }
-                // 正常到这里，保留状态应该是reserved或者creating（时间戳也满足，时间戳可能满足，也可能不满足），或者released
+                // 其实走到这一步，保留状态出现什么都有可能，兜底还是要靠guard
                 boolean aborted = orderTxService.tryAbortOrderCreation(orderNo);
 
                 if (!aborted) {
@@ -90,7 +90,16 @@ public class ReservationReconcileScheduler {
                         consistencyService.syncFromExistingOrder(orderAfterFence.get());
                     }
                     // 创建方赢但暂时仍读不到订单时，保守等待下一轮，不释放。
-                    continue;
+                    /*
+                     * 对账任务中，如果!aborted，进行查库，如果发现订单不存在，实际上也是要抛异常的吧？是的，所以这里gpt的注释不对
+                     *
+                     */
+//                    continue; // 抛异常
+                    throw new IllegalStateException(
+                            "invariant violated: abort fence was not acquired "
+                                    + "but DB order is missing, orderNo="
+                                    + orderNo
+                    );
                 }
 
                 consistencyService.releaseAfterAbortedFence(orderNo);

@@ -50,22 +50,3 @@ CREATE TABLE IF NOT EXISTS outbox_message (
     KEY idx_outbox_scan(status, next_retry_at),
     KEY idx_outbox_sending(status, updated_at)
 ) ENGINE=InnoDB;
-
-CREATE TABLE IF NOT EXISTS compensation_task (
-    id BIGINT PRIMARY KEY AUTO_INCREMENT,
-    biz_key VARCHAR(128) NOT NULL,
-    task_type VARCHAR(32) NOT NULL,
-    order_no VARCHAR(64) NOT NULL,
-    user_id BIGINT NOT NULL,
-    goods_id BIGINT NOT NULL,
-    reason VARCHAR(1000) NULL,
-    status VARCHAR(16) NOT NULL,
-    retry_count INT NOT NULL DEFAULT 0,
-    next_retry_at DATETIME(3) NOT NULL,
-    last_error VARCHAR(1000) NULL,
-    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
-
-    UNIQUE KEY uk_comp_biz_key(biz_key),
-    KEY idx_comp_scan(status, next_retry_at)
-) ENGINE=InnoDB;
