@@ -5,10 +5,13 @@ import com.example.seckill.domain.SeckillOrder;
 import com.example.seckill.redis.MarkOrderedResult;
 import com.example.seckill.redis.RedisReservationService;
 import com.example.seckill.redis.ReleaseResult;
+import com.example.seckill.repository.OrderCreateGuardRepository;
 import com.example.seckill.repository.OrderRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+
+import java.util.Optional;
 
 /**
  * DB -> Redis 的统一最终一致性修复入口。
@@ -27,11 +30,14 @@ public class OrderConsistencyService {
 
     private final OrderRepository orderRepository;
     private final RedisReservationService reservationService;
+    private final OrderCreateGuardRepository guardRepository;
+
 
     public OrderConsistencyService(OrderRepository orderRepository,
-                                   RedisReservationService reservationService) {
+                                   RedisReservationService reservationService, OrderCreateGuardRepository guardRepository) {
         this.orderRepository = orderRepository;
         this.reservationService = reservationService;
+        this.guardRepository = guardRepository;
     }
 
     /**
@@ -45,6 +51,42 @@ public class OrderConsistencyService {
     // 这个其实不用担心，redis lua脚本是原子的，并且redis采用io多路复用，哪个请求先到，就先处理谁，并且操作是CAS（CAS要求原子性）
     // 因此没有问题。
     public void syncFromExistingOrder(SeckillOrder order) {
+        String orderNo = order.orderNo();
+
+        /*
+         * 核心不变量：
+         *
+         * guard=ABORTED 表示该 orderNo 已被永久禁止创建订单。
+         *
+         * 因此：
+         *
+         * guard=ABORTED
+         * +
+         * DB order exists
+         *
+         * 是严重的一致性冲突。
+         *
+         * 此时无法判断：
+         * 1. guard 是否被错误写成 ABORTED；
+         * 2. DB order 是否为非法/历史脏数据。
+         *
+         * 所以不能继续根据订单状态自动同步 Redis，
+         * 尤其不能因为 order=CANCELED 就执行 stock++，
+         * 否则可能给真实订单错误回补库存。
+         */
+        Optional<String> guardState =
+                guardRepository.findState(orderNo);
+
+        if (guardState.isPresent()
+                && OrderCreateGuardRepository.ABORTED.equals(
+                guardState.get())) {
+
+            throw new IllegalStateException(
+                    "invariant violated: guard=ABORTED but DB order exists, "
+                            + "orderNo=" + orderNo
+                            + ", status=" + order.status()
+            );
+        }
         switch (order.status()) {
             case WAIT_PAY, PAID -> markOrderedAfterConfirmedOrder(order.orderNo());
 

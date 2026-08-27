@@ -5,6 +5,7 @@ import com.example.seckill.domain.Reservation;
 import com.example.seckill.domain.ReservationState;
 import com.example.seckill.domain.SeckillOrder;
 import com.example.seckill.redis.RedisReservationService;
+import com.example.seckill.repository.OrderCreateGuardRepository;
 import com.example.seckill.repository.OrderRepository;
 import com.example.seckill.service.OrderConsistencyService;
 import com.example.seckill.service.OrderTxService;
@@ -25,17 +26,20 @@ public class ReservationReconcileScheduler {
     private final OrderTxService orderTxService;
     private final OrderConsistencyService consistencyService;
     private final SeckillProperties properties;
+    private final OrderCreateGuardRepository guardRepository;
 
     public ReservationReconcileScheduler(RedisReservationService reservationService,
                                          OrderRepository orderRepository,
                                          OrderTxService orderTxService,
                                          OrderConsistencyService consistencyService,
-                                         SeckillProperties properties) {
+                                         SeckillProperties properties,
+                                         OrderCreateGuardRepository guardRepository) {
         this.reservationService = reservationService;
         this.orderRepository = orderRepository;
         this.orderTxService = orderTxService;
         this.consistencyService = consistencyService;
         this.properties = properties;
+        this.guardRepository = guardRepository;
     }
 
     @Scheduled(fixedDelayString = "${seckill.scheduler.fixed-delay-ms:3000}")
@@ -68,9 +72,79 @@ public class ReservationReconcileScheduler {
                  * (再)读一次 lease 可以减少与健康消费者竞争 guard，但不能替代 guard。
                  */
                 // 建议这里可以把pending zset中的sore改为leaseUntilMillis，这样避免频繁扫 但对账任务无法处理
-                if (reservation.state() == ReservationState.CREATING
-                        && reservation.leaseUntilMillis() > System.currentTimeMillis()) {
-                    continue;
+                if (reservation.state() == ReservationState.CREATING) {
+                    /*
+                     * 先检查 guard 状态
+                     *
+                     * 这是为了防止：
+                     *
+                     * guard 已经 ABORTED，但是不知什么原因一直没有回补库存，造成消费者
+                     * 又续了 lease，
+                     * 导致对账任务不断等待。
+                     */
+                    long now = System.currentTimeMillis();
+                    Optional<String> guardState =
+                            guardRepository.findState(orderNo);
+
+                    if (guardState.isPresent()) {
+
+                        if (OrderCreateGuardRepository.ABORTED.equals(
+                                guardState.get())) {
+
+                            /*
+                             * guard 已经最终裁决为 ABORTED。
+                             * leaseUntil 立即失效，直接释放。
+                             */
+                            consistencyService.releaseAfterAbortedFence(orderNo);
+                            continue;
+                        }
+
+                        if (OrderCreateGuardRepository.CREATED.equals(
+                                guardState.get())) {
+
+                            SeckillOrder order =
+                                    orderRepository.findByOrderNo(orderNo)
+                                            .orElseThrow(() ->
+                                                    new IllegalStateException(
+                                                            "guard=CREATED but DB order is missing, "
+                                                                    + "orderNo=" + orderNo));
+
+                            consistencyService.syncFromExistingOrder(order);
+                            continue;
+                        }
+
+                        if (!OrderCreateGuardRepository.CREATING.equals(
+                                guardState.get())) {
+
+                            throw new IllegalStateException(
+                                    "unexpected guard state="
+                                            + guardState.get()
+                                            + ", orderNo="
+                                            + orderNo);
+                        }
+
+                        /*
+                         * guard=CREATING 并不是最终态。
+                         *
+                         * 只有 lease 仍然有效时，
+                         * 才暂时不与创建方竞争。
+                         * 否则哪怕guard是creating，对账任务也还是要竞争。
+                         */
+                    }
+
+                    /*
+                     * guard 尚未进入最终态，
+                     * 此时 lease 才有意义。
+                     */
+                    if (reservation.leaseUntil() > now) {
+
+                        reservationService.reschedulePendingIndex(
+                                orderNo,
+                                reservation.leaseUntil()
+                        );
+
+                        continue;
+                    }
                 }
 
                 Optional<SeckillOrder> dbOrder =
@@ -89,6 +163,7 @@ public class ReservationReconcileScheduler {
 
                     if (orderAfterFence.isPresent()) {
                         consistencyService.syncFromExistingOrder(orderAfterFence.get());
+                        continue;
                     }
                     // 创建方赢但暂时仍读不到订单时，保守等待下一轮，不释放。
                     /*

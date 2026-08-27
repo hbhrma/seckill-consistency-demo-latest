@@ -96,6 +96,7 @@ public class CreateOrderConsumer implements RocketMQListener<MessageExt> {
                     "unknown claim result=" + claim + ", orderNo=" + message.orderNo());
         }
 
+        // 以上判断只不过是尽量避免对guard的竞争，真正兜底还是要靠guard
         final CreateOrderTxResult txResult;
 
         try {

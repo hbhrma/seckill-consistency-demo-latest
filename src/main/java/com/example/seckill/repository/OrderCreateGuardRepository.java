@@ -3,6 +3,8 @@ package com.example.seckill.repository;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
 
+import java.util.Optional;
+
 @Repository
 public class OrderCreateGuardRepository {
 
@@ -50,5 +52,16 @@ public class OrderCreateGuardRepository {
                 WHERE order_no = ?
                   AND state = 'CREATING'
                 """, orderNo);
+    }
+    public Optional<String> findState(String orderNo) {
+        return jdbcTemplate.query(
+                """
+                SELECT state
+                FROM seckill_order_create_guard
+                WHERE order_no = ?
+                """,
+                (rs, rowNum) -> rs.getString("state"),
+                orderNo
+        ).stream().findFirst();
     }
 }

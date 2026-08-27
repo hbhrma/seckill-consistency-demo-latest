@@ -15,6 +15,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import static com.example.seckill.redis.RedisKeys.PENDING_RESERVATION_ZSET;
+
 @Service
 public class RedisReservationService {
 
@@ -60,7 +62,7 @@ public class RedisReservationService {
                         RedisKeys.stock(goodsId),
                         RedisKeys.buyers(goodsId),
                         RedisKeys.reservation(orderNo),
-                        RedisKeys.PENDING_RESERVATION_ZSET,
+                        PENDING_RESERVATION_ZSET,
                         RedisKeys.CREATE_ORDER_SEND_PENDING_ZSET
                 ),
                 String.valueOf(userId),
@@ -91,7 +93,7 @@ public class RedisReservationService {
                 claimScript,
                 List.of(
                         RedisKeys.reservation(orderNo),
-                        RedisKeys.PENDING_RESERVATION_ZSET,
+                        PENDING_RESERVATION_ZSET,
                         RedisKeys.CREATE_ORDER_SEND_PENDING_ZSET
                 ),
                 orderNo,
@@ -121,7 +123,7 @@ public class RedisReservationService {
                 markOrderedScript,
                 List.of(
                         RedisKeys.reservation(orderNo),
-                        RedisKeys.PENDING_RESERVATION_ZSET,
+                        PENDING_RESERVATION_ZSET,
                         RedisKeys.CREATE_ORDER_SEND_PENDING_ZSET
                 ),
                 orderNo
@@ -179,7 +181,7 @@ public class RedisReservationService {
                 RedisKeys.stock(reservation.goodsId()),
                 RedisKeys.buyers(reservation.goodsId()),
                 RedisKeys.reservation(orderNo),
-                RedisKeys.PENDING_RESERVATION_ZSET,
+                PENDING_RESERVATION_ZSET,
                 RedisKeys.CREATE_ORDER_SEND_PENDING_ZSET
         );
     }
@@ -216,7 +218,7 @@ public class RedisReservationService {
     }
 
     public List<String> findDuePendingOrderNos(int limit) {
-        return findDue(RedisKeys.PENDING_RESERVATION_ZSET, limit);
+        return findDue(PENDING_RESERVATION_ZSET, limit);
     }
 
     public List<String> findDueCreateOrderSendOrderNos(int limit) {
@@ -236,7 +238,7 @@ public class RedisReservationService {
 
     public void removePendingIndex(String orderNo) {
         redisTemplate.opsForZSet()
-                .remove(RedisKeys.PENDING_RESERVATION_ZSET, orderNo);
+                .remove(PENDING_RESERVATION_ZSET, orderNo);
     }
 
     public void removeCreateOrderSendPending(String orderNo) {
@@ -282,5 +284,35 @@ public class RedisReservationService {
                 orderNo
         );
         return mapReleaseCode(code);
+    }
+
+    /**
+     * 将 reservation 下一次允许被对账任务扫描的时间推迟到 nextCheckAtMillis。
+     *
+     * 使用 XX 语义：只有 orderNo 当前仍存在于 PENDING_RESERVATION_ZSET 中时才更新 score。
+     *
+     * 这样可以避免并发情况下：
+     *
+     * 1. 其他线程已经完成处理并 ZREM(orderNo)
+     * 2. 当前对账线程随后又执行普通 ZADD
+     * 3. 把已经删除的 orderNo 重新放回 pending ZSET
+     */
+    public void reschedulePendingIndex(String orderNo, long nextCheckAtMillis) {
+
+        Boolean updated = redisTemplate.opsForZSet().addIfPresent(
+                PENDING_RESERVATION_ZSET,
+                orderNo,
+                (double) nextCheckAtMillis
+        );
+
+        /*
+         * false 不一定是异常。
+         *
+         * 可能在当前线程扫描 reservation 之后，
+         * 另一个线程已经完成 ORDERED / RELEASED 等处理，
+         * 并把该 orderNo 从 pending ZSET 中删除。
+         *
+         * 此时不应该重新创建 pending 元素。
+         */
     }
 }
