@@ -80,6 +80,7 @@ public class CreateOrderConsumer implements RocketMQListener<MessageExt> {
         }
 
         // 因为也还是不确定订单是否入库，因此不要贸然设置stock_released标志位
+        // 并且实际上，这里可以删除两个zset元素
         if (claim == ClaimResult.RELEASED) {
             return;
         }

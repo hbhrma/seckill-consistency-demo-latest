@@ -136,11 +136,11 @@ public class ReservationReconcileScheduler {
                      * guard 尚未进入最终态，
                      * 此时 lease 才有意义。
                      */
-                    if (reservation.leaseUntil() > now) {
+                    if (reservation.leaseUntilMillis() > now) {
 
                         reservationService.reschedulePendingIndex(
                                 orderNo,
-                                reservation.leaseUntil()
+                                reservation.leaseUntilMillis()
                         );
 
                         continue;

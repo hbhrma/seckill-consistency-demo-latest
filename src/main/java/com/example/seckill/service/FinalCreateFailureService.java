@@ -56,6 +56,7 @@ public class FinalCreateFailureService {
         } catch (RuntimeException failure) {
             // 可以让对账任务继续进行，因为zset中的记录并没有删除
             // 可以不需要刷新重试时间戳，让对账任务尽快进行
+            // 但是releaseAfterAbortedFence内部有几个比较严重的一致性异常，应该考虑解决。
             return;
         }
     }

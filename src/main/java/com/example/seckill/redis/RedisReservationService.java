@@ -28,6 +28,9 @@ public class RedisReservationService {
     private final DefaultRedisScript<Long> markOrderedScript;
     private final DefaultRedisScript<Long> releaseUnorderedScript;
     private final DefaultRedisScript<Long> releaseCanceledScript;
+    private final DefaultRedisScript<Long> releaseOrderedAfterAbortedScript;
+    private final DefaultRedisScript<Long> updateZsetIfPresentScript;
+
 
     public RedisReservationService(StringRedisTemplate redisTemplate,
                                    SeckillProperties properties) {
@@ -38,6 +41,8 @@ public class RedisReservationService {
         this.markOrderedScript = script("lua/mark_ordered.lua");
         this.releaseUnorderedScript = script("lua/release_unordered.lua");
         this.releaseCanceledScript = script("lua/release_canceled.lua");
+        this.releaseOrderedAfterAbortedScript = script("lua/release_ordered_after_aborted.lua");
+        this.updateZsetIfPresentScript = script("lua/update_zset_if_present.lua");
     }
 
     private static DefaultRedisScript<Long> script(String path) {
@@ -299,10 +304,11 @@ public class RedisReservationService {
      */
     public void reschedulePendingIndex(String orderNo, long nextCheckAtMillis) {
 
-        Boolean updated = redisTemplate.opsForZSet().addIfPresent(
-                PENDING_RESERVATION_ZSET,
+        redisTemplate.execute(
+                updateZsetIfPresentScript,
+                List.of(PENDING_RESERVATION_ZSET),
                 orderNo,
-                (double) nextCheckAtMillis
+                String.valueOf(nextCheckAtMillis)
         );
 
         /*
