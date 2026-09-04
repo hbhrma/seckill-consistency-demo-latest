@@ -107,23 +107,25 @@ public class OutboxRepository {
                 """, id);
     }
 
-    public void markRetry(long id,
-                          int nextRetryCount,
-                          boolean dead,
-                          LocalDateTime nextRetryAt,
-                          String error) {
-        jdbcTemplate.update("""
-                UPDATE outbox_message
-                SET status = ?,
-                    retry_count = ?,
-                    next_retry_at = ?,
-                    last_error = ?,
-                    updated_at = NOW(3)
-                WHERE id = ?
-                  AND status = 'SENDING'
-                """,
-                dead ? "DEAD" : "RETRY",
-                nextRetryCount,
+    public int markRetry(long id,
+                         int maxRetries,
+                         LocalDateTime nextRetryAt,
+                         String error) {
+
+        return jdbcTemplate.update("""
+            UPDATE outbox_message
+            SET status = CASE
+                    WHEN retry_count + 1 >= ? THEN 'DEAD'
+                    ELSE 'RETRY'
+                END,
+                next_retry_at = ?,
+                last_error = ?,
+                updated_at = NOW(3),
+                retry_count = retry_count + 1
+            WHERE id = ?
+              AND status = 'SENDING'
+            """,
+                maxRetries,
                 Timestamp.valueOf(nextRetryAt),
                 trim(error),
                 id
@@ -201,17 +203,32 @@ public class OutboxRepository {
         );
     }
 
+//    public int recoverStuckSending(long timeoutSeconds) {
+//        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(timeoutSeconds);
+//        return jdbcTemplate.update("""
+//                UPDATE outbox_message
+//                SET status = 'RETRY',
+//                    next_retry_at = NOW(3),
+//                    last_error = CONCAT(COALESCE(last_error, ''), ' | recovered stuck SENDING'),
+//                    updated_at = NOW(3)
+//                WHERE status = 'SENDING'
+//                  AND updated_at < ?
+//                """, Timestamp.valueOf(cutoff));
+//    }
+    // 统一用数据库时间，一般来说，jvm时区 连接时区 会话时区保持一致 不同节点上的机器时钟尽量偏差小，那么用java时间也行
+    // 机器时钟就是操作系统时钟，每个机器的机器时钟是靠自身的本地计时器计算的，受不同硬件差异影响，不同机器的机器时钟是可能不一样的，有协议可以同步，减小偏差，但无法完全消除
     public int recoverStuckSending(long timeoutSeconds) {
-        LocalDateTime cutoff = LocalDateTime.now().minusSeconds(timeoutSeconds);
         return jdbcTemplate.update("""
                 UPDATE outbox_message
                 SET status = 'RETRY',
                     next_retry_at = NOW(3),
-                    last_error = CONCAT(COALESCE(last_error, ''), ' | recovered stuck SENDING'),
+                    last_error = LEFT(CONCAT(COALESCE(last_error, ''), ' | recovered stuck SENDING'), 1000),
                     updated_at = NOW(3)
                 WHERE status = 'SENDING'
-                  AND updated_at < ?
-                """, Timestamp.valueOf(cutoff));
+                  AND updated_at < TIMESTAMPADD(SECOND, ?, NOW(3))
+                """,
+                -timeoutSeconds
+        );
     }
 
     private static String trim(String error) {

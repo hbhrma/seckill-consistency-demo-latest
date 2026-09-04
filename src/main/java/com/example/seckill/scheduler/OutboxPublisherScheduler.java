@@ -60,6 +60,9 @@ public class OutboxPublisherScheduler {
      * 不管是哪种类型的消息，如果发送不成功，都需要重新发送（不过重新发送有上限）
      */
 
+    // 这边消息发送的可靠性是不止基于producer的重试机制，业务层自己也会做重试
+    // 不过达到业务层最大重试次数便不再重试，进入DEAD状态由dead处理任务处理
+    // 最终兜底是canceledorderreleasereconciler 和 expiredorderscanner
     @Scheduled(fixedDelayString = "${seckill.scheduler.fixed-delay-ms:3000}")
     public void publish() {
         // recoverStuckSending 用于处理某个producdr修改outbox记录状态为sending后挂掉导致消息一致没有办法
@@ -107,14 +110,13 @@ public class OutboxPublisherScheduler {
 
             } catch (RuntimeException e) {
                 // 这里抛出的异常应该剔除因为上边消息类型非法的异常
+                // 这里修改的逻辑，主要是把重试次数自增，判断是否超过最大重试次数放到数据库中，保证原子性，避免某个publisher用旧的重试次数覆盖
+                // 即使不修改也没问题，因为有兜底机制
+                // 这里的退避时间还是按照可能不准确的nextRetry，不过这个问题不大
                 int nextRetry = outbox.retryCount() + 1;
-                boolean dead =
-                        nextRetry >= properties.getScheduler().getOutboxMaxRetry();
-
                 outboxRepository.markRetry(
                         outbox.id(),
-                        nextRetry,
-                        dead,
+                        properties.getScheduler().getOutboxMaxRetry(),
                         LocalDateTime.now().plusSeconds(backoffSeconds(nextRetry)),
                         e.getMessage()
                 );
