@@ -7,6 +7,11 @@ spring:
     username: root
     password: 123456
     driver-class-name: com.mysql.cj.jdbc.Driver
+  task:
+    scheduling:
+      pool:
+        size: 6
+      thread-name-prefix: seckill-scheduler-
 
   data:
     redis:
@@ -43,3 +48,18 @@ seckill:
     create-order-consumer-group: seckill-create-order-group
     close-order-consumer-group: seckill-close-order-group
     release-stock-consumer-group: seckill-release-stock-group
+
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus,scheduledtasks
+
+  metrics:
+    distribution:
+      percentiles-histogram:
+        tasks.scheduled.execution: true
+
+    tags:
+      application: seckill-consistency-demo

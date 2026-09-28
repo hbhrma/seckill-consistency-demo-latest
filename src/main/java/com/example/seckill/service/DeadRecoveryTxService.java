@@ -1,6 +1,8 @@
 package com.example.seckill.service;
 
+import com.example.seckill.domain.OrderStatus;
 import com.example.seckill.domain.OutboxEventType;
+import com.example.seckill.domain.OutboxMessage;
 import com.example.seckill.domain.SeckillOrder;
 import com.example.seckill.dto.ReleaseStockMessage;
 import com.example.seckill.repository.OrderRepository;
@@ -80,7 +82,6 @@ public class DeadRecoveryTxService {
                 closeOrderDeadOutboxId,
                 "expired WAIT_PAY order canceled by DEAD recovery"
         );
-
         return true;
     }
 
@@ -95,6 +96,15 @@ public class DeadRecoveryTxService {
      *
      * 业务代码必须检查 affectedRows，
      * 只有CAS成功时才执行依赖它的后续 SQL。*/
+
+    /*
+    * 对于第七个，我的理解是，执行到confirmStockReleasedAndResolveDead，
+    * 库存回补操作一定是进行了，因此对于更新markStockReleased的结果affected为0还是为1，
+    * 其实不重要，因为核心不变量已经维护，也就是订单状态为CANCELED，库存已经回补。
+    * 对于resolveDead的更新而言，是affected=1最好，但如果是0，那么release_stock消息的状态可能是retry，sending，sent，
+    * 但是还是一样的，核心不变量或者说结果已经达到，而且操作具有幂等性，即使release_stock的消费者消费消息，也不会出现打破核心不变量的情况。
+    */
+
     @Transactional
     public void confirmStockReleasedAndResolveDead(long deadOutboxId,
                                                    String orderNo) {
@@ -102,6 +112,39 @@ public class DeadRecoveryTxService {
         outboxRepository.resolveDead(
                 deadOutboxId,
                 "Redis stock release confirmed"
+        );
+    }
+
+    @Transactional
+    public void insertReleaseStockAndResolve(OutboxMessage outbox, String orderNo) {
+        SeckillOrder canceledOrder = orderRepository.findByOrderNo(orderNo)
+                .orElseThrow(() -> new IllegalStateException(
+                        "canceled order disappeared, orderNo=" + orderNo));
+
+        if (canceledOrder.status() != OrderStatus.CANCELED) {
+            throw new IllegalStateException(
+                    "order is not CANCELED, orderNo="
+                            + orderNo + ", status=" + canceledOrder.status()
+            );
+        }
+
+        ReleaseStockMessage releaseMessage = new ReleaseStockMessage(
+                canceledOrder.orderNo(),
+                canceledOrder.userId(),
+                canceledOrder.goodsId()
+        );
+
+        outboxRepository.insertIfAbsent(
+                UUID.randomUUID().toString(),
+                "RELEASE_STOCK:" + orderNo,
+                OutboxEventType.RELEASE_STOCK,
+                jsons.toJson(releaseMessage),
+                LocalDateTime.now()
+        );
+
+        outboxRepository.resolveDead(
+                outbox.id(),
+                "insert release stock message record for canceled order, orderNo=" + orderNo
         );
     }
 }

@@ -40,7 +40,7 @@ public class OrderConsistencyService {
         this.guardRepository = guardRepository;
     }
 
-    /**
+    /*
      * DB 已经明确存在订单时，以 DB 业务状态为事实源修正 Redis。
      *
      * 当前系统保证 order + CLOSE_ORDER outbox + guard=CREATED 同事务提交，

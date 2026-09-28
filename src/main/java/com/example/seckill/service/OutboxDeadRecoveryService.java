@@ -12,8 +12,10 @@ import com.example.seckill.repository.OrderRepository;
 import com.example.seckill.repository.OutboxRepository;
 import com.example.seckill.util.Jsons;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
  * Outbox 普通发送重试耗尽后的业务级兜底。
@@ -24,6 +26,7 @@ import java.time.LocalDateTime;
  * 3. 只有 DB 明确 CANCELED，才允许 releaseCanceled()；
  * 4. WAIT_PAY -> CANCELED 与 RELEASE_STOCK outbox 必须同 DB 事务。
  */
+// 实际上，我觉得publisher发送前最好能看看数据库的状态，目前我觉得也行
 @Service
 public class OutboxDeadRecoveryService {
 
@@ -87,14 +90,8 @@ public class OutboxDeadRecoveryService {
             return;
         }
 
-        /*
-        * 实际上如果周期任务处理类型为close order消息（状态为dead），
-        * 并且订单的状态是canceled，
-        * 那么实际上也可以在outbox中插入一个类型为release_stock的消息记录，
-        * 并且修改状态为resolved（两个操作放在一个事务中）
-        */
         if (order.status() == OrderStatus.CANCELED) {
-            releaseCanceledAndResolve(outbox, order);
+            txService.insertReleaseStockAndResolve(outbox, orderNo);
             return;
         }
 
@@ -145,7 +142,7 @@ public class OutboxDeadRecoveryService {
         }
 
         if (latest.status() == OrderStatus.CANCELED) {
-            releaseCanceledAndResolve(outbox, latest);
+            txService.insertReleaseStockAndResolve(outbox, orderNo);
             return;
         }
 
@@ -201,6 +198,8 @@ public class OutboxDeadRecoveryService {
         ReleaseResult result =
                 reservationService.releaseCanceled(order.orderNo());
 
+
+        // 这个理可以写保留状态异常
         if (result != ReleaseResult.RELEASED_NOW
                 && result != ReleaseResult.ALREADY_RELEASED) {
             throw new IllegalStateException(
